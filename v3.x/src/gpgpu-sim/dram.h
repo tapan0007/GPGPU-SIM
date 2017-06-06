@@ -96,7 +96,7 @@ public:
            class memory_partition_unit *mp );
 
    bool full() const;
-   void print( FILE* simFile ) const;
+   void print( FILE* simFile );// const;
    void visualize() const;
    void print_stat( FILE* simFile );
    unsigned que_length() const; 
@@ -151,7 +151,17 @@ private:
 
    unsigned int dram_util_bins[10];
    unsigned int dram_eff_bins[10];
-   unsigned int last_n_cmd, last_n_activity, last_bwutil;
+   //unsigned int last_n_cmd, last_n_activity, last_bwutil;
+   unsigned int last_bwutil;
+
+   unsigned int last_n_cmd;
+   unsigned int last_n_activity;
+   unsigned int last_n_nop;
+   unsigned int last_n_act;
+   unsigned int last_n_pre;
+   unsigned int last_n_rd;
+   unsigned int last_n_wr;
+   unsigned int last_n_req;
 
    unsigned int n_cmd;
    unsigned int n_activity;

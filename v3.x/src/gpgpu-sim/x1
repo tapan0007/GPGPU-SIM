@@ -1,0 +1,83 @@
+		else if (attr.attrType == WHICH_THREAD_BLOCK)
+		{
+			bool moreTBsLeft = m_shader->m_cluster->get_gpu()->get_more_cta_left() ? true : false;
+			unsigned int tbId = 0xdeaddead;
+			bool attrValSet = false;
+			if (rl_scheduler::gTBWithWarpsFinished && (rl_scheduler::gTBWithWarpsFinished[smId] != 0xdeaddead) && moreTBsLeft)
+			{
+				tbId = rl_scheduler::gTBWithWarpsFinished[smId];
+				if (gReadyTBIdSet.find(tbId) != gReadyTBIdSet.end())
+				{
+					attr.currValue = tbId;
+					attrValSet = true;
+					//if ((smId == 0) && (m_id == 0))
+						//printf("%llu: tb %u has at least one warp finished\n", gpu_sim_cycle, attr.currValue);
+				}
+			}
+			if ((attrValSet == false) && rl_scheduler::gTBWithWarpsAtBarrier && (rl_scheduler::gTBWithWarpsAtBarrier[smId] != 0xdeaddead))
+			{
+				tbId = rl_scheduler::gTBWithWarpsAtBarrier[smId];
+				if (gReadyTBIdSet.find(tbId) != gReadyTBIdSet.end())
+				{
+					attr.currValue = tbId;
+					attrValSet = true;
+					//if ((smId == 0) && (m_id == 0))
+						//printf("%llu: tb %u has at least one warp at barrier\n", gpu_sim_cycle, attr.currValue);
+				}
+			}
+			if ((attrValSet == false) && gTBProgressArray)
+			{
+				if (moreTBsLeft)
+				{
+					unsigned int maxProgress = 0;
+					unsigned int maxProgressTB = 0xdeaddead;
+		
+					for (unsigned int tbId = 0; tbId < MAX_NUM_TB_PER_SM; tbId++)
+					{
+						unsigned index = smId * MAX_NUM_TB_PER_SM + tbId;
+						unsigned int tbProgress = gTBProgressArray[index];
+			
+						if ((tbProgress > maxProgress) && (gReadyTBIdSet.find(tbId) != gReadyTBIdSet.end()))
+						{
+							maxProgress = tbProgress;
+							maxProgressTB = tbId;
+						}
+					}
+					if (maxProgressTB != 0xdeaddead)
+					{
+						attr.currValue = maxProgressTB / attr.bucketSize;
+						attrValSet = true;
+					}
+					//if ((smId == 0) && (m_id == 0))
+					//{
+						//printf("%llu: max progress TB %u(%u)\n", gpu_sim_cycle, maxProgressTB, maxProgress);
+					//}
+				}
+				else
+				{
+					unsigned int minProgress = 0xFFFFFFFF;
+					unsigned int minProgressTB = 0xdeaddead;
+		
+					for (unsigned int tbId = 0; tbId < MAX_NUM_TB_PER_SM; tbId++)
+					{
+						unsigned index = smId * MAX_NUM_TB_PER_SM + tbId;
+						unsigned int tbProgress = gTBProgressArray[index];
+		
+						if ((tbProgress < (minProgress - 32)) && (gReadyTBIdSet.find(tbId) != gReadyTBIdSet.end()))
+						{
+							minProgress = tbProgress;
+							minProgressTB = tbId;
+						}
+					}
+					if (minProgressTB != 0xdeaddead)
+					{
+						attr.currValue = minProgressTB / attr.bucketSize;
+						attrValSet = true;
+					}
+					//if ((smId == 0) && (m_id == 0))
+					//{
+						//printf("%llu: min progress TB %u(%u)\n", gpu_sim_cycle, minProgressTB, minProgress);
+					//}
+				}
+			}
+		}

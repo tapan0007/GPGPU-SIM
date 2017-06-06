@@ -108,7 +108,7 @@ enum special_operations_t {
 };
 typedef enum special_operations_t special_ops; // Required to identify for the power model
 enum operation_pipeline_t {
-    UNKOWN_OP,
+    UNKNOWN_OP,
     SP__OP,
     SFU__OP,
     MEM__OP
@@ -161,6 +161,7 @@ public:
        assert( m_num_cores_running > 0 );
        m_num_cores_running--; 
    }
+   unsigned num_running() const {return m_num_cores_running;}
    bool running() const { return m_num_cores_running>0; }
    bool done() const 
    {
@@ -694,7 +695,7 @@ public:
         op=NO_OP; 
         oprnd_type=UN_OP;
         sp_op=OTHER_OP;
-        op_pipe=UNKOWN_OP;
+        op_pipe=UNKNOWN_OP;
         mem_op=NOT_TEX;
         num_operands=0;
         num_regs=0;
@@ -776,6 +777,9 @@ public:
         m_uid=0;
         m_empty=true; 
         m_config=NULL; 
+		m_high_prio_inst = false;
+		m_cta_id = 0xdeadbeef;
+		dBypassL1Cache = false;
     }
     warp_inst_t( const core_config *config ) 
     { 
@@ -788,6 +792,9 @@ public:
         m_mem_accesses_created=false;
         m_cache_hit=false;
         m_is_printf=false;
+		m_high_prio_inst = false;
+		m_cta_id = 0xdeadbeef;
+		dBypassL1Cache = false;
     }
     virtual ~warp_inst_t(){
     }
@@ -913,6 +920,7 @@ public:
     const mem_access_t &accessq_back() { return m_accessq.back(); }
     void accessq_pop_back() { m_accessq.pop_back(); }
 
+	unsigned int get_issue_cycle() const {return issue_cycle;}
     bool dispatch_delay()
     { 
         if( cycles > 0 ) 
@@ -926,6 +934,14 @@ public:
 
     void print( FILE *fout ) const;
     unsigned get_uid() const { return m_uid; }
+	bool mIsHighPrioInst() const {return m_high_prio_inst;}
+	void mSetHighPrioInst() {m_high_prio_inst = true;}
+	void mResetHighPrioInst() {m_high_prio_inst = false;}
+	void mSetCtaId(unsigned int ctaId) {m_cta_id = ctaId;}
+	unsigned int mGetCtaId() const {return m_cta_id;}
+	bool mBypassL1Cache() const {return dBypassL1Cache;}
+	void mSetBypassL1Cache() {dBypassL1Cache = true;}
+	void mResetBypassL1Cache() {dBypassL1Cache = false;}
 
 protected:
 
@@ -938,6 +954,7 @@ protected:
     bool m_is_printf;
     unsigned m_warp_id;
     unsigned m_dynamic_warp_id; 
+	unsigned int m_cta_id;
     const core_config *m_config; 
     active_mask_t m_warp_active_mask; // dynamic active mask for timing model (after predication)
     active_mask_t m_warp_issued_mask; // active mask at issue (prior to predication test) -- for instruction counting
@@ -953,6 +970,8 @@ protected:
     bool m_per_scalar_thread_valid;
     std::vector<per_thread_info> m_per_scalar_thread;
     bool m_mem_accesses_created;
+	bool m_high_prio_inst;
+	bool dBypassL1Cache;
     std::list<mem_access_t> m_accessq;
 
     static unsigned sm_next_uid;

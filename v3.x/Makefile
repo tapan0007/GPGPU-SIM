@@ -54,7 +54,7 @@ ifneq ($(shell which nvcc), "")
 	endif
 endif
 
-LIBS = cuda-sim gpgpu-sim_uarch $(INTERSIM) gpgpusimlib 
+LIBS = cuda-sim gpgpu-sim_uarch $(INTERSIM) gpgpusimlib
 
 
 TARGETS =

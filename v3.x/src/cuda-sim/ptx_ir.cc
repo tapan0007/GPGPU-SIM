@@ -606,6 +606,44 @@ void function_info::find_dominators( )
    }
 }
 
+std::set<basic_block_t*> visited;
+std::set<basic_block_t*> notDone;
+std::map<std::string, std::map<unsigned int, unsigned int> > gKernelBackEdgeSrcDstMap;
+
+void function_info::dft(basic_block_t* bb)
+{
+	int bbId = bb->bb_id;
+	visited.insert(bb);
+	notDone.insert(bb);
+	for (std::set<int>::iterator s = bb->successor_ids.begin(); s != bb->successor_ids.end(); s++) 
+	{
+		int sId = (*s);
+		assert(sId < m_basic_blocks.size());
+		basic_block_t* sbb = m_basic_blocks[sId];
+		if (visited.find(sbb) == visited.end())
+			dft(sbb);
+		else if (notDone.find(sbb) != notDone.end())
+		{
+			unsigned int backEdgeSrcPC = bb->ptx_end->m_PC;
+			unsigned int backEdgeDstPC = sbb->ptx_begin->m_PC;
+			printf("Back edge from block %u(PC=0x%x) to %u(PC=0x%x)\n", bbId, backEdgeSrcPC, sId,backEdgeDstPC);
+			std::map<unsigned int, unsigned int>& backEdgeSrcDstMap = gKernelBackEdgeSrcDstMap[m_name];
+			backEdgeSrcDstMap[backEdgeSrcPC] = backEdgeDstPC;
+		}
+	}
+	notDone.erase(bb);
+}
+
+void function_info::findBackEdges()
+{
+	visited.clear();
+	notDone.clear();
+	std::map<unsigned int, unsigned int> backEdgeSrcDstMap;
+	gKernelBackEdgeSrcDstMap[m_name] = backEdgeSrcDstMap;
+	basic_block_t* beginBB = m_basic_blocks[0];
+	dft(beginBB);
+}
+
 void function_info::find_postdominators( )
 {  
    // find postdominators using algorithm of Muchnick's Adv. Compiler Design & Implemmntation Fig 7.14 

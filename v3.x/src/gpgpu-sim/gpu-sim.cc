@@ -363,6 +363,8 @@ void shader_core_config::reg_options(class OptionParser * opp)
                                 "For complete list of prioritization values see shader.h enum scheduler_prioritization_type"
                                 "Default: gto",
                                  "gto");
+	option_parser_register(opp, "-rl_attrs", OPT_CSTR, &rl_attrs, "attributes for RL algo", "lw");
+	option_parser_register(opp, "-rr_gto", OPT_INT32, &rr_gto_partition, "num of tbs in rr mode", "0");
 }
 
 void gpgpu_sim_config::reg_options(option_parser_t opp)
@@ -871,11 +873,41 @@ void gpgpu_sim::change_cache_config(FuncCache cache_config)
 }
 
 
+void gpgpu_sim::getL2Stats(unsigned int& numAccesses, unsigned int& numMisses)
+{
+   numAccesses = 0;
+   numMisses = 0;
+   if(!m_memory_config->m_L2_config.disabled())
+   {
+       cache_stats l2_stats;
+       struct cache_sub_stats l2_css;
+       struct cache_sub_stats total_l2_css;
+       l2_stats.clear();
+       l2_css.clear();
+       total_l2_css.clear();
+
+       for (unsigned i=0;i<m_memory_config->m_n_mem_sub_partition;i++){
+           m_memory_sub_partition[i]->accumulate_L2cache_stats(l2_stats);
+           m_memory_sub_partition[i]->get_L2cache_sub_stats(l2_css);
+
+           total_l2_css += l2_css;
+       }
+       if (!m_memory_config->m_L2_config.disabled() && m_memory_config->m_L2_config.get_num_lines()) {
+          //L2c_print_cache_stat();
+		  numAccesses = total_l2_css.accesses;
+		  numMisses = total_l2_css.misses;
+       }
+   }
+}
+
 void gpgpu_sim::clear_executed_kernel_info()
 {
    m_executed_kernel_names.clear();
    m_executed_kernel_uids.clear();
 }
+
+extern void gClearGlobals();
+
 void gpgpu_sim::gpu_print_stat() 
 {  
    FILE *statfout = stdout; 
@@ -883,7 +915,8 @@ void gpgpu_sim::gpu_print_stat()
    std::string kernel_info_str = executed_kernel_info_string(); 
    fprintf(statfout, "%s", kernel_info_str.c_str()); 
 
-   printf("gpu_sim_cycle = %lld\n", gpu_sim_cycle);
+   gClearGlobals();
+   printf("%s gpu_sim_cycle = %lld\n", m_executed_kernel_names[0].c_str(), gpu_sim_cycle);
    printf("gpu_sim_insn = %lld\n", gpu_sim_insn);
    printf("gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);
    printf("gpu_tot_sim_cycle = %lld\n", gpu_tot_sim_cycle+gpu_sim_cycle);
@@ -950,6 +983,7 @@ void gpgpu_sim::gpu_print_stat()
           //L2c_print_cache_stat();
           printf("L2_total_cache_accesses = %u\n", total_l2_css.accesses);
           printf("L2_total_cache_misses = %u\n", total_l2_css.misses);
+          printf("L2_total_cache_cold_misses = %u\n", total_l2_css.cold_misses);
           if(total_l2_css.accesses > 0)
               printf("L2_total_cache_miss_rate = %.4lf\n", (double)total_l2_css.misses/(double)total_l2_css.accesses);
           printf("L2_total_cache_pending_hits = %u\n", total_l2_css.pending_hits);
@@ -1098,6 +1132,14 @@ void shader_core_ctx::issue_block2core( kernel_info_t &kernel )
 
     shader_CTA_count_log(m_sid, 1);
     printf("GPGPU-Sim uArch: core:%3d, cta:%2u initialized @(%lld,%lld)\n", m_sid, free_cta_hw_id, gpu_sim_cycle, gpu_tot_sim_cycle );
+
+/*
+    if (schedulers[0]->isFBIScheduler())
+    {   
+        fbi_scheduler* fbiSched = (fbi_scheduler*)schedulers[0];
+        fbiSched->mInsertBlockInInorderList(free_cta_hw_id);
+	}
+*/
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -1237,6 +1279,7 @@ void gpgpu_sim::cycle()
           asm("int $03");
       }
       gpu_sim_cycle++;
+	  rl_scheduler::gNumGTCMemLatencyCycles += rl_scheduler::gNumWarpsExecutingMemInstrGPU;
       if( g_interactive_debugger_enabled ) 
          gpgpu_debug();
 

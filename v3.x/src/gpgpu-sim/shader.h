@@ -54,6 +54,9 @@
 #include "gpu-cache.h"
 #include "traffic_breakdown.h"
 
+#include "CMAC.h"
+#include "SarsaAgent.h"
+
 
 
 #define NO_OP_FLAG            0xFF
@@ -87,6 +90,8 @@ public:
    bool m_active; 
 };
 
+#define INSTR_BUFFER_SIZE 2
+
 class shd_warp_t {
 public:
     shd_warp_t( class shader_core_ctx *shader, unsigned warp_size) 
@@ -95,6 +100,10 @@ public:
         m_stores_outstanding=0;
         m_inst_in_pipeline=0;
         reset(); 
+		dCurrIterNum = 0;
+		dCurrIterRank = 0;
+		dIsSplitWarp = false;
+		dIsLongLatMemInstr = false;
     }
     void reset()
     {
@@ -109,6 +118,10 @@ public:
         m_done_exit=true;
         m_last_fetch=0;
         m_next=0;
+		dCurrIterNum = 0;
+		dCurrIterRank = 0;
+		dIsSplitWarp = false;
+		dIsLongLatMemInstr = false;
     }
     void init( address_type start_pc,
                unsigned cta_id,
@@ -125,6 +138,10 @@ public:
         n_completed   -= active.count(); // active threads are not yet completed
         m_active_threads = active;
         m_done_exit=false;
+		dCurrIterNum = 0;
+		dCurrIterRank = 0;
+		dIsSplitWarp = false;
+		dIsLongLatMemInstr = false;
     }
 
     bool functional_done() const;
@@ -182,6 +199,8 @@ public:
     }
     const warp_inst_t *ibuffer_next_inst() { return m_ibuffer[m_next].m_inst; }
     bool ibuffer_next_valid() { return m_ibuffer[m_next].m_valid; }
+    const warp_inst_t *ibuffer_next_to_next_inst() { return m_ibuffer[((m_next + 1) % IBUFFER_SIZE)].m_inst; }
+    bool ibuffer_next_to_next_valid() { return m_ibuffer[((m_next + 1) % IBUFFER_SIZE)].m_valid; }
     void ibuffer_free()
     {
         m_ibuffer[m_next].m_inst = NULL;
@@ -214,8 +233,19 @@ public:
     unsigned get_dynamic_warp_id() const { return m_dynamic_warp_id; }
     unsigned get_warp_id() const { return m_warp_id; }
 
+	unsigned int mGetCurrIterRank() const {return dCurrIterRank;}
+	void mSetCurrIterRank(unsigned int xRank) {dCurrIterRank = xRank;}
+	unsigned int mGetCurrIterNum() const {return dCurrIterNum;}
+	void mIncrCurrIterNum() {dCurrIterNum++;}
+	void mSetSplitWarp() {dIsSplitWarp = true;}
+	void mResetSplitWarp() {dIsSplitWarp = false;}
+	bool mIsSplitWarp() const {return dIsSplitWarp;}
+	void mSetLongLatMemInstr() {dIsLongLatMemInstr = true;}
+	void mResetLongLatMemInstr() {dIsLongLatMemInstr = false;}
+	bool mIsLongLatMemInstr() const {return dIsLongLatMemInstr;}
+
 private:
-    static const unsigned IBUFFER_SIZE=2;
+    static const unsigned IBUFFER_SIZE=INSTR_BUFFER_SIZE;
     class shader_core_ctx *m_shader;
     unsigned m_cta_id;
     unsigned m_warp_id;
@@ -245,6 +275,11 @@ private:
 
     unsigned m_stores_outstanding; // number of store requests sent but not yet acknowledged
     unsigned m_inst_in_pipeline;
+
+	unsigned int dCurrIterNum;
+	unsigned int dCurrIterRank;
+	bool dIsSplitWarp; //set whenever branch divergence causes warp split, on reconvergence reset
+	bool dIsLongLatMemInstr;
 };
 
 
@@ -280,6 +315,18 @@ enum concrete_scheduler
     CONCRETE_SCHEDULER_GTO,
     CONCRETE_SCHEDULER_TWO_LEVEL_ACTIVE,
     CONCRETE_SCHEDULER_WARP_LIMITING,
+    CONCRETE_SCHEDULER_REINFORCEMENT_LEARNING,
+    //CONCRETE_SCHEDULER_ROUND_ROBIN_PLUS_GREEDY,
+    CONCRETE_SCHEDULER_RANDOM,
+    CONCRETE_SCHEDULER_RTO,
+    CONCRETE_SCHEDULER_IPAWS,
+    CONCRETE_SCHEDULER_RANDOM_ANN,
+    //CONCRETE_SCHEDULER_0_GREEDY_SCHEDULER_1_LRR,
+    //CONCRETE_SCHEDULER_MY_GREEDY,
+    //CONCRETE_SCHEDULER_TB_PRIO,
+    //CONCRETE_SCHEDULER_FBI,
+    //CONCRETE_SCHEDULER_OLDEST,
+	//CONCRETE_SCHEDULER_VIRT_TB,
     NUM_CONCRETE_SCHEDULERS
 };
 
@@ -294,7 +341,18 @@ public:
                    int id) 
         : m_supervised_warps(), m_stats(stats), m_shader(shader),
         m_scoreboard(scoreboard), m_simt_stack(simt), /*m_pipeline_reg(pipe_regs),*/ m_warp(warp),
-        m_sp_out(sp_out),m_sfu_out(sfu_out),m_mem_out(mem_out), m_id(id){}
+        m_sp_out(sp_out),m_sfu_out(sfu_out),m_mem_out(mem_out), m_id(id)
+		{
+			lastCycleRunCycle = false;
+			firstCycleRunCycle = false;
+			consCycleCnt = 0;
+			runStallCyclesVec.clear();
+			stallCycleCntMap.clear();
+			runCycleCntMap.clear();
+			lastSchedRunCycle = 0;
+			schedStateVec.clear();
+
+		}
     virtual ~scheduler_unit(){}
     virtual void add_supervised_warp_id(int i) {
         m_supervised_warps.push_back(&warp(i));
@@ -302,7 +360,10 @@ public:
     virtual void done_adding_supervised_warps() {
         m_last_supervised_issued = m_supervised_warps.end();
     }
-
+	virtual std::vector<shd_warp_t*>::const_iterator getLastRRIssuedWarpIter() {std::vector<shd_warp_t*>::const_iterator iter = m_supervised_warps.end(); return iter;}
+	virtual std::vector<shd_warp_t*>::const_iterator getLastGTOIssuedWarpIter() {std::vector<shd_warp_t*>::const_iterator iter = m_supervised_warps.end(); return iter;}
+	virtual void setLastRRIssuedWarpIter(std::vector<shd_warp_t*>::const_iterator iter) {}
+	virtual void setLastGTOIssuedWarpIter(std::vector<shd_warp_t*>::const_iterator iter) {}
 
     // The core scheduler cycle method is meant to be common between
     // all the derived schedulers.  The scheduler's behaviour can be
@@ -325,7 +386,10 @@ public:
         // No greedy scheduling based on last to issue. Only the priority function determines
         // priority
         ORDERED_PRIORITY_FUNC_ONLY,
-        NUM_ORDERING,
+        ORDERING_RANDOM_GREEDY_THEN_PRIORITY_FUNC,
+		ORDERED_ROUND_ROBIN_PLUS_GREEDY_FUNC,
+		ORDERING_GREEDY_THEN_PRIORITY_TWO_LEVEL_FUNC,
+        NUM_ORDERING
     };
     template < typename U >
     void order_by_priority( std::vector< U >& result_list,
@@ -334,11 +398,43 @@ public:
                             unsigned num_warps_to_add,
                             OrderingType age_ordering,
                             bool (*priority_func)(U lhs, U rhs) );
+    static bool sort_warps_by_iter_num(shd_warp_t* lhs, shd_warp_t* rhs);
     static bool sort_warps_by_oldest_dynamic_id(shd_warp_t* lhs, shd_warp_t* rhs);
+	static bool sort_warps_by_highest_q_value(shd_warp_t* lhs, shd_warp_t* rhs);
+	static bool sort_warps_by_highest_q_value_func_approx(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_youngest_dynamic_id(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_yfb_dynamic_id(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_fms_cmd_type(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_mfs_cmd_type(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_barrier_flag(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_finish_flag(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_split_oldest_dynamic_id(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_split_youngest_dynamic_id(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_long_lat_mem_oldest_dynamic_id(shd_warp_t* lhs, shd_warp_t* rhs);
+    static bool sort_warps_by_long_lat_mem_youngest_dynamic_id(shd_warp_t* lhs, shd_warp_t* rhs);
 
     // Derived classes can override this function to populate
     // m_supervised_warps with their scheduling policies
     virtual void order_warps() = 0;
+	virtual void collectRewardAndSetAttributes(bool instIssued, shd_warp_t* warp, operation_pipeline_t pipeUsed, char* instrType, warp_inst_t* instrSched) {}
+	virtual void computeNextQvalueAndUpdateOldQvalue(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched) {}
+	virtual void computeNextHvalueAndUpdateOldHvalue(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched) {}
+	virtual void computeNextValueAndUpdateOldValue(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched) {}
+	virtual bool isRLSched() const {return false;}
+	virtual void printQvalues() {}
+	virtual void clear() 
+	{
+		lastCycleRunCycle = false;
+		firstCycleRunCycle = false;
+		consCycleCnt = 0;
+		runStallCyclesVec.clear();
+		schedStateVec.clear();
+		stallCycleCntMap.clear();
+		runCycleCntMap.clear();
+		lastSchedRunCycle = 0;
+	}
+	unsigned int getCmdPipeType(const warp_inst_t* pI);
+	shd_warp_t* getFirstReadyWarp(std::vector<shd_warp_t*>& xSortedWarpVec, std::vector<shd_warp_t*>& xStalledWarpVec);
 
 protected:
     virtual void do_on_warp_issued( unsigned warp_id,
@@ -369,7 +465,19 @@ protected:
     register_set* m_sfu_out;
     register_set* m_mem_out;
 
+	bool lastCycleRunCycle;
+	bool firstCycleRunCycle;
+	unsigned int consCycleCnt;
+	unsigned long long lastSchedRunCycle;
+	std::vector<unsigned int> runStallCyclesVec;
+	std::vector<unsigned int> schedStateVec;
+	std::map<unsigned int, unsigned int> stallCycleCntMap;
+	std::map<unsigned int, unsigned int> runCycleCntMap;
+
     int m_id;
+
+    friend class shader_core_ctx;
+    friend class rlEngine;
 };
 
 class lrr_scheduler : public scheduler_unit {
@@ -406,6 +514,62 @@ public:
     }
 
 };
+
+
+class ann_scheduler : public scheduler_unit {
+public:
+	ann_scheduler ( shader_core_stats* stats, shader_core_ctx* shader,
+                    Scoreboard* scoreboard, simt_stack** simt,
+                    std::vector<shd_warp_t>* warp,
+                    register_set* sp_out,
+                    register_set* sfu_out,
+                    register_set* mem_out,
+                    int id,
+					unsigned int xnumrlengines);
+	virtual ~ann_scheduler () {}
+	virtual void order_warps ();
+    virtual void issue_warps_ann(unsigned int actionIndex);
+    virtual void done_adding_supervised_warps() {
+        m_last_supervised_issued = m_supervised_warps.begin();
+    }
+     virtual bool isANNSched() const {return true;}
+};
+class rto_scheduler : public scheduler_unit {
+public:
+	rto_scheduler ( shader_core_stats* stats, shader_core_ctx* shader,
+                    Scoreboard* scoreboard, simt_stack** simt,
+                    std::vector<shd_warp_t>* warp,
+                    register_set* sp_out,
+                    register_set* sfu_out,
+                    register_set* mem_out,
+                    int id )
+	: scheduler_unit ( stats, shader, scoreboard, simt, warp, sp_out, sfu_out, mem_out, id ){}
+	virtual ~rto_scheduler () {}
+	virtual void order_warps ();
+    virtual void done_adding_supervised_warps() {
+        m_last_supervised_issued = m_supervised_warps.begin();
+    }
+
+};
+
+class ipaws_scheduler : public scheduler_unit {
+public:
+	ipaws_scheduler ( shader_core_stats* stats, shader_core_ctx* shader,
+                    Scoreboard* scoreboard, simt_stack** simt,
+                    std::vector<shd_warp_t>* warp,
+                    register_set* sp_out,
+                    register_set* sfu_out,
+                    register_set* mem_out,
+                    int id )
+	: scheduler_unit ( stats, shader, scoreboard, simt, warp, sp_out, sfu_out, mem_out, id ){}
+	virtual ~ipaws_scheduler () {}
+	virtual void order_warps ();
+    virtual void done_adding_supervised_warps() {
+        m_last_supervised_issued = m_supervised_warps.begin();
+    }
+	shd_warp_t* getOldestReadyWarp(std::vector<shd_warp_t*>& xStalledWarpVec);
+};
+
 
 
 class two_level_active_scheduler : public scheduler_unit {
@@ -479,7 +643,562 @@ protected:
     unsigned m_num_warps_to_limit;
 };
 
+enum rl_attr_type {
+	LAST_WARP_ISSUED = 1,
+	LAST_TB_ISSUED,
+	FAST_TB,
+	SLOW_TB,
+	TB_WITH_WARPS_AT_BARRIER,
+	TB_WITH_WARPS_FINISHED,
+	ANY_TB_WITH_WARPS_AT_BARRIER,
+	ANY_TB_WITH_WARPS_FINISHED,
+	NUM_OF_MEM_QS_LOADED,
+	NUM_OF_MEM_REQS_IN_SCHED_Q,
+	NUM_OF_SP_SFU_INSTR_PER_MEM_INSTR_ISSUED,
+	NUM_OF_INSTR_ISSUED_PER_L1_MISS,
+	AVG_GL_MEM_LAT,
+	NUM_OF_MEM_INSTRS_EXECUTING_ON_SM,
+	NUM_OF_MEM_INSTRS_EXECUTING_ON_GPU,
+	NUM_OF_FUTURE_SFU_INSTRS,
+	NUM_OF_FUTURE_MEM_INSTRS,
+	NUM_OF_READY_MEM_INSTRS,
+	NUM_OF_READY_ALU_INSTRS,
+	NUM_OF_READY_SFU_INSTRS,
+	NUM_OF_READY_SP_INSTRS,
+	NUM_OF_SPLIT_WARPS,
+	NUM_OF_READY_INSTRS,
+	NUM_OF_SCHEDULABLE_WARPS,
+	NUM_OF_WAITING_INSTRS,
+	NUM_OF_PIPE_STALLS,
+	NUM_OF_MEM_PIPE_STALLS,
+	NUM_OF_SFU_PIPE_STALLS,
+	NUM_OF_SP_PIPE_STALLS,
+	NUM_OF_IDLE_WARPS,
+	NUM_OF_READY_MEM_INSTRS_WITH_SAME_TB_AS_LAST_MEM_INSTR,
+	NUM_OF_READY_MEM_INSTRS_WITH_SAME_PC_AS_LAST_MEM_INSTR,
+	TBS_WAITING,
+	NO_TB_FINISHED,
+	NUM_OF_WARPS_ISSUED_BARRIER,
+	NUM_OF_WARPS_FINISHED,
+	NUM_OF_READY_READ_MEM_INSTRS,
+	NUM_OF_READY_WRITE_MEM_INSTRS,
+	NUM_OF_READY_GLOBAL_MEM_INSTRS,
+	NUM_OF_READY_SHARED_TEX_CONST_MEM_INSTRS,
+	NUM_OF_READY_SHARED_MEM_INSTRS,
+	NUM_OF_READY_CONSTANT_MEM_INSTRS,
+	NUM_OF_READY_TEXTURE_MEM_INSTRS,
+	I_CACHE_MISS_PERCENT,
+	L1_MISS_PERCENT,
+	L2_MISS_PERCENT,
+	WHICH_THREAD_BLOCK,
+	READY_SP_INSTRS,
+	READY_SFU_INSTRS,
+	READY_MEM_INSTRS,
+	READY_GMEM_INSTRS,
+	READY_LMEM_INSTRS,
+	READY_SMEM_INSTRS,
+	READY_CMEM_INSTRS,
+	READY_TMEM_INSTRS,
+	READY_SHARED_TEX_CONST_MEM_INSTRS,
+	READY_GLOBAL_CONST_TEXTURE_MEM_INSTRS,
+	READY_GLOBAL_CONST_TEXTURE_READ_MEM_INSTRS,
+	READY_GLOBAL_READ_MEM_INSTRS,
+	WHICH_PIPELINE,
+	WHICH_WARP,
+	FINISH_BARRIER_INORDER,
+	OLDEST_LRR,
+	UNKNOWN_ATTR_TYPE
+};
 
+/*
+char rl_attr_type[] = {
+	"LAST_WARP_ISSUED",
+	"LAST_TB_ISSUED",
+	"FAST_TB",
+	"SLOW_TB",
+	"TB_WITH_WARPS_AT_BARRIER",
+	"TB_WITH_WARPS_FINISHED",
+	"ANY_TB_WITH_WARPS_AT_BARRIER",
+	"ANY_TB_WITH_WARPS_FINISHED",
+	"NUM_OF_MEM_QS_LOADED",
+	"NUM_OF_MEM_REQS_IN_SCHED_Q",
+	"NUM_OF_SP_SFU_INSTR_PER_MEM_INSTR_ISSUED",
+	"NUM_OF_INSTR_ISSUED_PER_L1_MISS",
+	"AVG_GL_MEM_LAT",
+	"NUM_OF_MEM_INSTRS_EXECUTING_ON_SM",
+	"NUM_OF_MEM_INSTRS_EXECUTING_ON_GPU",
+	"NUM_OF_FUTURE_SFU_INSTRS",
+	"NUM_OF_FUTURE_MEM_INSTRS",
+	"NUM_OF_READY_MEM_INSTRS",
+	"NUM_OF_READY_ALU_INSTRS",
+	"NUM_OF_READY_SFU_INSTRS",
+	"NUM_OF_READY_SP_INSTRS",
+	"NUM_OF_SPLIT_WARPS",
+	"NUM_OF_READY_INSTRS",
+	"NUM_OF_SCHEDULABLE_WARPS",
+	"NUM_OF_WAITING_INSTRS",
+	"NUM_OF_MEM_PIPE_STALLS",
+	"NUM_OF_SFU_PIPE_STALLS",
+	"NUM_OF_SP_PIPE_STALLS",
+	"NUM_OF_IDLE_WARPS",
+	"NUM_OF_READY_MEM_INSTRS_WITH_SAME_TB_AS_LAST_MEM_INSTR",
+	"NUM_OF_READY_MEM_INSTRS_WITH_SAME_PC_AS_LAST_MEM_INSTR",
+	"TBS_WAITING",
+	"NO_TB_FINISHED",
+	"NUM_OF_WARPS_ISSUED_BARRIER",
+	"NUM_OF_WARPS_FINISHED",
+	"NUM_OF_READY_READ_MEM_INSTRS",
+	"NUM_OF_READY_WRITE_MEM_INSTRS",
+	"NUM_OF_READY_GLOBAL_MEM_INSTRS",
+	"NUM_OF_READY_SHARED_TEX_CONST_MEM_INSTRS",
+	"NUM_OF_READY_SHARED_MEM_INSTRS",
+	"NUM_OF_READY_CONSTANT_MEM_INSTRS",
+	"NUM_OF_READY_TEXTURE_MEM_INSTRS",
+	"I_CACHE_MISS_PERCENT",
+	"L1_MISS_PERCENT",
+	"L2_MISS_PERCENT",
+	"WHICH_THREAD_BLOCK",
+	"READY_SP_INSTRS",
+	"READY_SFU_INSTRS",
+	"READY_GMEM_INSTRS",
+	"READY_SMEM_INSTRS",
+	"READY_CMEM_INSTRS",
+	"READY_TMEM_INSTRS",
+	"READY_SHARED_TEX_CONST_MEM_INSTRS",
+	"READY_GLOBAL_CONST_TEXTURE_MEM_INSTRS",
+	"READY_GLOBAL_CONST_TEXTURE_READ_MEM_INSTRS",
+	"READY_GLOBAL_READ_MEM_INSTRS",
+	"WHICH_PIPELINE",
+	"WHICH_WARP",
+	"FINISH_BARRIER_INORDER",
+	"OLDEST_LRR",
+	"UNKNOWN_ATTR_TYPE"
+};
+*/
+
+class rl_attribute {
+public:
+	rl_attribute(char* shortName, char* name, rl_attr_type type, unsigned int numValues, unsigned int defVal, unsigned int bktSize)
+	{
+		unsigned int lSize = strlen(shortName) + 1;
+		attrShortName = new char[lSize];
+		strcpy(attrShortName, shortName);
+
+		lSize = strlen(name) + 1;
+		attrName = new char[lSize];
+		strcpy(attrName, name);
+
+		attrType = type;
+		numAttrValues = numValues;
+		bucketSize = bktSize;
+		if (defVal > bucketSize)
+		{
+			defaultValue = bucketSize;
+			currValue = bucketSize;
+		}
+		else
+		{
+			defaultValue = defVal;
+			currValue = defVal;
+		}
+		currRawValue = currValue;
+		dPlaceValue = 0xdeaddead;
+		dDecreasingBucketSizes = 0xdeaddead;
+	}
+
+	void mSetBucketizedAttrValue(unsigned int xRawValue);
+	unsigned int mGetBucketValue(unsigned int lNumBucketsToBeUsed);
+	unsigned int mUsefulValuesForAction(unsigned int xAction, unsigned int xActionType);
+
+
+	char* attrShortName;
+	char* attrName;
+	rl_attr_type attrType;
+	unsigned int numAttrValues;
+	unsigned int defaultValue;
+	unsigned int bucketSize;
+	unsigned int currValue;
+	unsigned int currRawValue;
+	unsigned long long dPlaceValue;
+	unsigned int dDecreasingBucketSizes;
+};
+
+class random_scheduler : public scheduler_unit {
+public:
+	random_scheduler ( shader_core_stats* stats, shader_core_ctx* shader,
+                    Scoreboard* scoreboard, simt_stack** simt,
+                    std::vector<shd_warp_t>* warp,
+                    register_set* sp_out,
+                    register_set* sfu_out,
+                    register_set* mem_out,
+                    int id )
+	: scheduler_unit ( stats, shader, scoreboard, simt, warp, sp_out, sfu_out, mem_out, id )
+	{
+	}
+	virtual ~random_scheduler () {}
+	virtual void order_warps ();
+    virtual void done_adding_supervised_warps() {
+        m_last_supervised_issued = m_supervised_warps.end();
+    }
+	virtual bool isRandomScheduler() const {return true;}
+};
+
+
+class rl_scheduler;
+
+class valueUpdateMap
+{
+public:
+	std::map<unsigned long long, unsigned int> dMap;
+
+public:
+	valueUpdateMap() {dMap.clear();}
+	unsigned int mGetTotalQvalueUpdates(unsigned int& xNumCellsTouched);
+	unsigned int mGetQvalueUpdate(unsigned long long xIndex);
+	void mClear();
+	void getStats(unsigned int& xTotalQvalueUpdates);
+	void mIncrQvalueUpdate(unsigned long long xIndex);
+	void mIncrHvalueUpdate(unsigned long long xIndex);
+	void mSetQvalueUpdateCnt(unsigned long long xIndex, unsigned int updateCnt);
+};
+
+class valueMap
+{
+public:
+	std::map<unsigned long long, float> dStateActionValueMap;
+	std::map<unsigned long long, float> dStateValueMap;
+
+public:
+	valueMap() {dStateActionValueMap.clear(); dStateValueMap.clear();}
+	float mGetTotalQvalue(unsigned int xQvalueArraySize);
+	float mGetQvalue(unsigned long long xIndex);
+	void mSetQvalue(unsigned long long xIndex, float xVal);
+	float mGetHvalue(unsigned long long xIndex);
+	float mGetSvalue(unsigned long long xIndex);
+	void mSetHvalue(unsigned long long xIndex, float xVal);
+	void mSetSvalue(unsigned long long xIndex, float xVal);
+	void mClear();
+	void getStats(unsigned int& xNumQvalueEntriesVisited, float& xTotalQvalue);
+};
+
+#define MAX_STATE_HISTORY 16
+
+class rlEngine 
+{
+public:
+	rlEngine(rl_scheduler* xRLSched, unsigned int xEngineNum);
+	~rlEngine() {}
+
+	//void mSetPrimaryRLEngine() {dPrimaryRLEngine = true;}
+	//void mSetSecondaryRLEngine() {dSecondaryRLEngine = true;}
+
+	void mInitTables(valueMap*& xQvalueTable, valueUpdateMap*& xQvalueUpdateTable, SarsaAgent*& xSarsaAgent);
+	void addAttribute(char* shortName, char* name, rl_attr_type type, unsigned int numValues, unsigned int defVal, unsigned int bucketSize);
+	void addAttribute(char* shortName, char* name, rl_attr_type type, unsigned int numValues, unsigned int defVal, unsigned int bucketSize, unsigned int xDecreasingBucketSizes);
+	void addAttributes(std::string rl_attrs);
+	void collectRewardAndSetAttributes(bool instIssued, shd_warp_t* warp, operation_pipeline_t pipeUsed, char* instrType, warp_inst_t* instrSched);
+	void computeNextQvalueAndUpdateOldQvalue(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched);
+	void computeNextHvalueAndUpdateOldHvalue(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched);
+	void computeNextValueAndUpdateOldValue(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched);
+	unsigned int computeAction(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched);
+	void computeReward(bool instIssued);
+	void setAttributeValues1(shd_warp_t* warp);
+	void setAttributeValues2();
+	bool setWhichThreadBlock(rl_attribute& attr);
+	void computeCurrState();
+	unsigned long long getCurrStateForAction(unsigned int xAction);
+	unsigned long long getQvalueMatrixSize();
+	void updateStateActionWeightValuesActorCritic(float selectedV);
+	void updateStateActionWeightValues(float selectedQ);
+	void updateQvalue(float selectedQ);
+	void updateActorCriticValues(float selectedStateValue);
+	//float* allocateQvalues(float* QvalueTable);
+	//unsigned int* allocateQvalueUpdates(unsigned int* QvalueUpdateTable);
+	valueMap* allocateQvalues(valueMap* QvalueTable);
+	valueUpdateMap* allocateQvalueUpdates(valueUpdateMap* QvalueUpdateTable);
+	void initQvalues();
+	void initQvalueUpdates();
+	void initCurrStateAndAction();
+	void printQvalueUpdateCounts();
+
+	void populateStateFeatureValueArray(unsigned long long index);
+	void populateStateActionFeatureValueArray(unsigned long long index);
+	void populateGlobalStateActionFeatureValueArrayForAllStates();
+	void mSetQvalue(unsigned long long xIndex, float xVal);
+	void mSetHvalue(unsigned long long xIndex, float xVal);
+	void mSetSvalue(unsigned long long xIndex, float xVal);
+	void mSetQvalueUpdateCnt(unsigned long long xIndex, unsigned int updateCnt);
+	float mGetHvalueFromFeaturesAndWeights(unsigned long long xIndex);
+	float mGetSvalueFromFeaturesAndWeights(unsigned long long xIndex);
+	float mGetQvalueFromFeaturesAndWeights(unsigned long long xIndex);
+	float mGetQvalue(unsigned long long xIndex);
+	float mGetHvalue(unsigned long long xIndex);
+	float mGetSvalue(unsigned long long xIndex);
+	unsigned int mGetQvalueUpdate(unsigned long long xIndex);
+	void mIncrQvalueUpdate(unsigned long long xIndex);
+	void mIncrHvalueUpdate(unsigned long long xIndex);
+
+	void printQvalues();
+	void printQvalues(FILE* qvaluesFile, FILE* qvalueUpdateCntsFile, FILE* weightsFile);
+
+	void mCreateCMAC();
+	SarsaAgent* mCreateSarsaAgent(SarsaAgent* xSarsaAgent);
+	void mClear();
+	void printQValStat();
+	void printPrimaryActionCntSnapshots();
+
+	unsigned int mGetTotalQvalueUpdates(unsigned int& xNumCellsTouched);
+	float mGetTotalQvalue();
+	unsigned int mGetWhichSchedAction(bool exploration, long int randVal);
+	unsigned int mGetWhichWarpAction(bool exploration, long int randVal);
+	unsigned int mGetWhichWarpTypeAction(bool exploration, long int randVal);
+	unsigned int mGetLrrGtoAction(bool exploration, long int randVal);
+	unsigned int mGetBypassAction(bool exploration, long int randVal);
+	unsigned int mGetNumWarpsAction(bool exploration, long int randVal, unsigned int& numWarps);
+	std::string getStateNameStr();
+	std::string getStateNameValStr(unsigned int stateVal);
+	std::string getStateValStr(unsigned int stateVal);
+	std::string getActionStr(unsigned int actionVal);
+	void setActionStrVec();
+	void takeQvalueAndUpdateSnapshots();
+
+
+	unsigned int dEngineNum;
+	//bool dPrimaryRLEngine;
+	//bool dSecondaryRLEngine;
+
+	CMAC* dCMAC;
+	SarsaAgent* dSarsaAgent;
+    std::vector<double> dAttrRange;
+    std::vector<double> dAttrMinValue;
+    std::vector<double> dAttrResolution;
+	double* dCurrStateVector;
+
+	std::vector<rl_attribute> dAttributeVector;
+	float* dStateActionFeatureValueArray;
+	float* dStateActionWeightArray;
+	float* dStateActionWeightArray2; //used by new actor critic method
+	float dPrevQForFA;
+	float dPrev_vXphi;
+	float* dStateFeatureValueArray;
+	float* dStateWeightArray;
+	float dPrevHForFA;
+	float dPrevSForFA;
+
+	std::string dAttrString;
+	std::vector<std::string> dActionStrVec;
+
+	unsigned long long dStateActionValueArraySize;
+	unsigned long long dStateValueArraySize;
+	valueMap* dValues;
+	valueUpdateMap* dValueUpdates;
+
+    unsigned long long dPrevState;
+    unsigned int dPrevAction;
+	float dLambda[MAX_STATE_HISTORY];
+	unsigned long long dStateHistory[MAX_STATE_HISTORY];
+	unsigned int dActionHistory[MAX_STATE_HISTORY];
+    //unsigned int dPrevState2;
+    //unsigned int dPrevAction2;
+    unsigned long long dCurrState;
+	unsigned int dCurrAction;
+
+	unsigned long long dNumStates;
+	unsigned int dNumActions;
+	unsigned int dActionType;
+
+	float dReward;
+	float dDiscountFactor;
+
+	bool dFirstTime;
+	rl_scheduler* dRLSched;
+};
+
+#define MAX_NUM_RL_ENGINES 4
+
+// Reinforcement Learning Schduler
+class rl_scheduler : public scheduler_unit {
+public:
+	rl_scheduler ( shader_core_stats* stats, shader_core_ctx* shader,
+                    Scoreboard* scoreboard, simt_stack** simt,
+                    std::vector<shd_warp_t>* warp,
+                    register_set* sp_out,
+                    register_set* sfu_out,
+                    register_set* mem_out,
+                    int id,
+					unsigned int xnumrlengines);
+	virtual ~rl_scheduler () {}
+	virtual void order_warps ();
+    virtual void done_adding_supervised_warps() {
+        m_last_supervised_issued = m_supervised_warps.begin();
+    }
+
+	virtual bool isRLSched() const {return true;}
+
+	void mInitTables(valueMap*& xQvalueTable1, valueUpdateMap*& xQvalueUpdateTable1, 
+					 valueMap*& xQvalueTable2, valueUpdateMap*& xQvalueUpdateTable2, 
+					 SarsaAgent*& xSarsaAgent1, SarsaAgent*& xSarsaAgent2);
+	void collectRewardAndSetAttributes(bool instIssued, shd_warp_t* warp, operation_pipeline_t pipeUsed, char* instrType, warp_inst_t* instrSched);
+	void computeNextQvalueAndUpdateOldQvalue(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched);
+	void computeNextHvalueAndUpdateOldHvalue(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched);
+	void computeNextValueAndUpdateOldValue(shd_warp_t* warp, operation_pipeline_t pipeUsed, warp_inst_t* instrSched);
+	void setAttributeValues2();
+	void computeCurrState();
+
+	void initQvalues();
+	void initQvalueUpdates();
+	void initCurrStateAndAction();
+	void printQvalues();
+
+	void initRLAttributeArrays(unsigned int smId);
+	void clear();
+	bool mIsHighPrioWarp(shd_warp_t* warpPtr);
+	shd_warp_t* getGTOWarp();
+	unsigned int mGetMaxQaction(std::set<unsigned int>& xPossibleActionSet, unsigned int xMaxNumActions, unsigned int xEngineNum);
+	unsigned int mGetSoftmaxAction(std::set<unsigned int>& xPossibleActionSet, unsigned int xMaxNumActions, unsigned int xEngineNum, bool Hvalue);
+	unsigned int mGetMaxHaction(std::set<unsigned int>& xPossibleActionSet, unsigned int xMaxNumActions, unsigned int xEngineNum);
+	unsigned int mGetMaxQactionNewActorCritic(std::set<unsigned int>& xPossibleActionSet, unsigned int xMaxNumActions, unsigned int xEngineNum);
+
+
+
+	unsigned int mGetActionValue(shd_warp_t* xWarp, unsigned int xActionType);
+	unsigned int mGetWhichSchedAction(bool exploration, long int randVal);
+	unsigned int mGetWhichWarpAction(bool exploration, long int randVal);
+	unsigned int mGetWhichWarpTypeAction(bool exploration, long int randVal);
+	unsigned int mGetLrrGtoAction(bool exploration, long int randVal);
+	unsigned int mGetBypassAction(bool exploration, long int randVal);
+	unsigned int mGetNumWarpsAction(bool exploration, long int randVal);
+
+	operation_pipeline_t mGetCmdPipeType(shd_warp_t* xWarp);
+
+
+	//rlEngine* dPrimaryRLEnginePtr;
+	//rlEngine* dSecondaryRLEnginePtr;
+	rlEngine* dRLEngines[MAX_NUM_RL_ENGINES];
+	static unsigned int dRLActionTypes[MAX_NUM_RL_ENGINES];
+	unsigned int dNumRLEngines;
+
+	std::string dAttrString;
+
+	unsigned int numReadyAluInstrs;
+	unsigned int numReadyMemInstrs;
+	unsigned int numReadyGlobalMemInstrs;
+	unsigned int numReadySharedTexConstMemInstrs;
+	unsigned int numReadySharedMemInstrs;
+	unsigned int numReadyConstantMemInstrs;
+	unsigned int numReadyTextureMemInstrs;
+	unsigned int numReadyReadMemInstrs;
+	unsigned int numReadyWriteMemInstrs;
+	unsigned int numReadySfuInstrs;
+	unsigned int numReadySpInstrs;
+	unsigned int numSplitWarps;
+	unsigned int numReadyInstrs;
+	unsigned int numSchedulableWarps;
+	unsigned int numWaitingInstrs;
+    unsigned int numPipeStalls;
+    unsigned int numMemPipeStalls;
+    unsigned int numSfuPipeStalls;
+    unsigned int numSpPipeStalls;
+    unsigned int numIdleWarps;
+
+
+	unsigned int numFutureMemInstrs;
+	unsigned int numFutureSfuInstrs;
+
+	unsigned int readySpInstrs;
+	unsigned int readySfuInstrs;
+	unsigned int readyMemInstrs;
+	unsigned int readyGlobalMemInstrs;
+	unsigned int readyLongLatMemInstrs;
+	unsigned int readySharedMemInstrs;
+	unsigned int readyConstMemInstrs;
+	unsigned int readyTexMemInstrs;
+	unsigned int readySharedTexConstMemInstr;
+	unsigned int readyGlobalConstTexMemInstr;
+	unsigned int readyGlobalConstTexReadMemInstr;
+	unsigned int readyGlobalReadMemInstr;
+
+    unsigned int dFirstMaxQAction;
+    unsigned int dSecondMaxQAction;
+    unsigned int dFirstActionType;
+    unsigned int dSecondActionType;
+	bool dFirstTime;
+
+	unsigned int dConsecutiveNoInstrSchedCnt;
+	bool dFirstWarpIssued;
+	unsigned int dCurrLrrGtoAction;
+	float dCurrExplorationPercent;
+	float dOrigExplorationPercent;
+	float dCurrAlpha;
+	float dOrigAlpha;
+
+	unsigned int dNumOfSWLwarps;
+	unsigned int dIterNum;
+
+	static valueMap* gPrimaryQvalues;
+	static unsigned long long gPrimaryQvalueArraySize;
+	static unsigned long long gPrimaryStateVal;
+	static unsigned int gPrimaryNumActions;
+	static valueMap* gSecondaryQvalues;
+	static unsigned long long gSecondaryQvalueArraySize;
+	static unsigned long long gSecondaryStateVal;
+	static unsigned int gSecondaryNumActions;
+	static Scoreboard* gScoreboard;
+	static simt_stack** gSimtStack;
+	static rl_scheduler* gCurrRLSchedulerUnit;
+	static bool gUseCMACFuncApprox;
+	static bool gUseFeatureWeightFuncApprox;
+	static unsigned int gRandomSeed;
+	static bool gCumulativeRewardPenalty;
+	static bool gShareQvalueTable;
+	static bool gUsePrevQvalues;
+	static unsigned int gNumWarpsExecutingMemInstrGPU;
+	static unsigned int gNumReqsInMemSchedQs;
+	static unsigned int gNumMemSchedQsLoaded;
+	static unsigned int gNumSpInstrIssued;
+	static unsigned int gNumSfuInstrIssued;
+	static unsigned int gNumGTCMemInstrIssued;
+	static unsigned int gNumL1Misses;
+	static unsigned int gNumSpInstrIssued1;
+	static unsigned int gNumSfuInstrIssued1;
+	static unsigned int gNumGTCMemInstrIssued1;
+	static unsigned int gNumSpInstrIssued2;
+	static unsigned int gNumSfuInstrIssued2;
+	static unsigned int gNumGTCMemInstrIssued2;
+	static unsigned int gNumGTCMemInstrFinished;
+	static unsigned long long gNumGTCMemLatencyCycles;
+	static unsigned int gSelectedActionVal;
+
+	static unsigned int* gTBWithWarpsFinished;
+	static unsigned int* gTBWithWarpsAtBarrier;
+	static unsigned int* gNumWarpsExecutingMemInstr;
+	static unsigned int* gNumReadyMemInstrsWithSameTB;
+	static unsigned int* gLastMemInstrTB;
+	static unsigned int* gNumReadyMemInstrsWithSamePC;
+	static unsigned int* gLastMemInstrPC;
+	static unsigned int* gNumWarpsWaitingAtBarrier;
+	static unsigned int* gNumWarpsFinished;
+	static unsigned int* gNumInstrsIssued;
+
+	static unsigned int gNumInstrsExecedByFinishedTBs;
+	static unsigned int gNumFinishedTBs;
+	//static unsigned int gPrimaryActionType;
+	//static unsigned int gSecondaryActionType;
+
+	static unsigned int* gTBNumSpInstrsArray;
+	static unsigned int* gTBNumSfuInstrsArray;
+	static unsigned int* gTBNumMemInstrsArray;
+
+	static unsigned int gExplorationCnt;
+	static unsigned int* gGTCLongLatMemInstrCache;
+	static unsigned int gGTCLongLatMemInstrCacheIndex;
+	static unsigned long long gGTCTotalLatCycles;
+	static bool gGTCLongLatMemInstrReady;
+	static unsigned int* gSFULongLatInstrCache;
+	static unsigned int gSFULongLatInstrCacheIndex;
+	static unsigned long long gSFUTotalLatCycles;
+	static bool gSFULongLatInstrReady;
+};
 
 class opndcoll_rfu_t { // operand collector based register file unit
 public:
@@ -1267,6 +1986,8 @@ struct shader_core_config : public core_config
     unsigned max_cta_per_core; //Limit on number of concurrent CTAs in shader core
 
     char * gpgpu_scheduler_string;
+	char* rl_attrs;
+	unsigned int rr_gto_partition;
 
     char* pipeline_widths_string;
     int pipe_widths[N_PIPELINE_STAGES];
@@ -1364,12 +2085,12 @@ struct shader_core_stats_pod {
     unsigned *m_active_fu_lanes;
     unsigned *m_active_fu_mem_lanes;
     unsigned *m_n_diverge;    // number of divergence occurring in this shader
-    unsigned gpgpu_n_load_insn;
-    unsigned gpgpu_n_store_insn;
-    unsigned gpgpu_n_shmem_insn;
-    unsigned gpgpu_n_tex_insn;
-    unsigned gpgpu_n_const_insn;
-    unsigned gpgpu_n_param_insn;
+    unsigned long long gpgpu_n_load_insn;
+    unsigned long long gpgpu_n_store_insn;
+    unsigned long long gpgpu_n_shmem_insn;
+    unsigned long long gpgpu_n_tex_insn;
+    unsigned long long gpgpu_n_const_insn;
+    unsigned long long gpgpu_n_param_insn;
     unsigned gpgpu_n_shmem_bkconflict;
     unsigned gpgpu_n_cache_bkconflict;
     int      gpgpu_n_intrawarp_mshr_merge;
@@ -1729,6 +2450,8 @@ public:
 
 	 void inc_simt_to_mem(unsigned n_flits){ m_stats->n_simt_to_mem[m_sid] += n_flits; }
 
+	 void mInitNumActiveWarps();//used by fbi_scheduler
+
 private:
 	 unsigned inactive_lanes_accesses_sfu(unsigned active_count,double latency){
       return  ( ((32-active_count)>>1)*latency) + ( ((32-active_count)>>3)*latency) + ( ((32-active_count)>>3)*latency);
@@ -1747,8 +2470,13 @@ private:
     void decode();
     
     void issue();
+    friend class fbi_scheduler;
+    friend class rlEngine;
+    friend class rl_scheduler;
+    friend class tb_prio_scheduler;
     friend class scheduler_unit; //this is needed to use private issue warp.
     friend class TwoLevelScheduler;
+    friend class ann_scheduler;
     friend class LooseRoundRobbinScheduler;
     void issue_warp( register_set& warp, const warp_inst_t *pI, const active_mask_t &active_mask, unsigned warp_id );
     void func_exec_inst( warp_inst_t &inst );
@@ -1824,6 +2552,10 @@ private:
     // is that the dynamic_warp_id is a running number unique to every warp
     // run on this shader, where the warp_id is the static warp slot.
     unsigned m_dynamic_warp_id;
+
+	unsigned int smallerIssuedWarpId0;
+	unsigned int smallerIssuedWarpId1;
+	unsigned int whichSchedFirst;
 };
 
 class simt_core_cluster {

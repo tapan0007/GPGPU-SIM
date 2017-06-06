@@ -1257,6 +1257,9 @@ public:
    }
    bool is_entry_point() const { return m_entry_point; }
 
+   void dft(basic_block_t* bb);
+   void findBackEdges();
+
 private:
    unsigned m_uid;
    unsigned m_local_mem_framesize;

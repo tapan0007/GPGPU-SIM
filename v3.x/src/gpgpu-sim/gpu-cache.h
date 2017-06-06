@@ -231,6 +231,10 @@ public:
         return(addr >> m_line_sz_log2) & (m_nset-1);
     }
 
+	new_addr_type blockIdx(new_addr_type addr) const
+	{
+		return (addr >> m_line_sz_log2);
+	}
     new_addr_type tag( new_addr_type addr ) const
     {
     	// For generality, the tag includes both index and tag. This allows for more complex set index
@@ -332,6 +336,7 @@ public:
     void get_stats(unsigned &total_access, unsigned &total_misses, unsigned &total_hit_res, unsigned &total_res_fail) const;
 
 	void update_cache_parameters(cache_config &config);
+	unsigned get_cold_misses() const {return m_cold_miss;}
 protected:
     // This constructor is intended for use only from derived classes that wish to
     // avoid unnecessary memory allocation that takes place in the
@@ -346,8 +351,10 @@ protected:
 
     cache_config &m_config;
 
+	unsigned int* coldMissArray;
     cache_block_t *m_lines; /* nbanks x nset x assoc lines in total */
 
+	unsigned m_cold_miss;
     unsigned m_access;
     unsigned m_miss;
     unsigned m_pending_hit; // number of cache miss that hit a line that is allocated but not filled
@@ -424,6 +431,7 @@ struct cache_sub_stats{
     unsigned misses;
     unsigned pending_hits;
     unsigned res_fails;
+	unsigned cold_misses;
 
     unsigned long long port_available_cycles; 
     unsigned long long data_port_busy_cycles; 
@@ -437,6 +445,7 @@ struct cache_sub_stats{
         misses = 0;
         pending_hits = 0;
         res_fails = 0;
+		cold_misses = 0;
         port_available_cycles = 0; 
         data_port_busy_cycles = 0; 
         fill_port_busy_cycles = 0; 
@@ -449,6 +458,7 @@ struct cache_sub_stats{
         misses += css.misses;
         pending_hits += css.pending_hits;
         res_fails += css.res_fails;
+		cold_misses += css.cold_misses;
         port_available_cycles += css.port_available_cycles; 
         data_port_busy_cycles += css.data_port_busy_cycles; 
         fill_port_busy_cycles += css.fill_port_busy_cycles; 
@@ -464,6 +474,7 @@ struct cache_sub_stats{
         ret.misses = misses + cs.misses;
         ret.pending_hits = pending_hits + cs.pending_hits;
         ret.res_fails = res_fails + cs.res_fails;
+        ret.cold_misses = cold_misses + cs.cold_misses;
         ret.port_available_cycles = port_available_cycles + cs.port_available_cycles; 
         ret.data_port_busy_cycles = data_port_busy_cycles + cs.data_port_busy_cycles; 
         ret.fill_port_busy_cycles = fill_port_busy_cycles + cs.fill_port_busy_cycles; 
@@ -530,6 +541,7 @@ public:
       m_bandwidth_management(config) 
     {
         init( name, config, memport, status );
+		printf("%s had %u mshr entries\n", m_name.c_str(), config.m_mshr_entries);
     }
 
     void init( const char *name,
@@ -580,6 +592,7 @@ public:
     }
     void get_sub_stats(struct cache_sub_stats &css) const {
         m_stats.get_sub_stats(css);
+		css.cold_misses = m_tag_array->get_cold_misses();
     }
 
     // accessors for cache bandwidth availability 
@@ -601,6 +614,7 @@ protected:
       m_bandwidth_management(config) 
     {
         init( name, config, memport, status );
+		printf("%s had %u mshr entries\n", m_name.c_str(), config.m_mshr_entries);
     }
 
 protected:

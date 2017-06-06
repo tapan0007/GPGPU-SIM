@@ -52,12 +52,55 @@ frfcfs_scheduler::frfcfs_scheduler( const memory_config *config, dram_t *dm, mem
 
 }
 
+unsigned int gLowPrioPendingMemReq = 0;
+unsigned int gHighPrioPendingMemReq = 0;
+unsigned int gHighPrioMemReq = 0;
+unsigned int gLowPrioMemReq = 0;
+extern bool gPrintDRAMInfo;
 void frfcfs_scheduler::add_req( dram_req_t *req )
 {
-   m_num_pending++;
-   m_queue[req->bk].push_front(req);
-   std::list<dram_req_t*>::iterator ptr = m_queue[req->bk].begin();
-   m_bins[req->bk][req->row].push_front( ptr ); //newest reqs to the front
+   	m_num_pending++;
+   	if (gPrintDRAMInfo)
+   		printf("%llu:Adding Request to DRAM partition %u, num pending reqs %u\n", gpu_sim_cycle, m_dram->id, m_num_pending); //JAYVANT
+   	if (req->data->get_inst().mIsHighPrioInst())
+   	{
+		gHighPrioMemReq++;
+		gHighPrioPendingMemReq++;
+
+   		//printf("%llu:Adding HIGH PRIO Request to DRAM partition %u, num pending reqs %u\n", gpu_sim_cycle, m_dram->id, m_num_pending); //JAYVANT
+		//printf("%llu: Num of pending high prio mem req = %u\n", gpu_sim_cycle, gHighPrioPendingMemReq);
+		//if (m_dram->id == 1)
+			//printf("%llu: adding high prio mem req %p\n", gpu_sim_cycle, req);
+
+   		m_queue[req->bk].push_back(req);
+
+   		std::list<dram_req_t*>::iterator ptr = m_queue[req->bk].begin();
+		while (ptr != m_queue[req->bk].end())
+		{
+			dram_req_t* req1 = (*ptr);
+			if (req == req1)
+			{
+   				m_bins[req->bk][req->row].push_back( ptr ); //newest reqs to the back
+				break;
+			}
+			ptr++;
+		}
+		assert (ptr != m_queue[req->bk].end());
+   	}
+   	else
+   	{
+		gLowPrioMemReq++;
+		gLowPrioPendingMemReq++;
+
+		//printf("%llu: Num of pending low prio mem req = %u\n", gpu_sim_cycle, gLowPrioPendingMemReq);
+   		//printf("%llu:Adding LOW PRIO Request to DRAM partition %u, num pending reqs %u\n", gpu_sim_cycle, m_dram->id, m_num_pending); //JAYVANT
+		//if (m_dram->id == 1)
+			//printf("%llu: adding low prio mem req %p\n", gpu_sim_cycle, req);
+
+   		m_queue[req->bk].push_front(req);
+   		std::list<dram_req_t*>::iterator ptr = m_queue[req->bk].begin();
+   		m_bins[req->bk][req->row].push_front( ptr ); //newest reqs to the front
+   	}
 }
 
 void frfcfs_scheduler::data_collection(unsigned int bank)
@@ -84,6 +127,36 @@ dram_req_t *frfcfs_scheduler::schedule( unsigned bank, unsigned curr_row )
 
       std::map<unsigned,std::list<std::list<dram_req_t*>::iterator> >::iterator bin_ptr = m_bins[bank].find( curr_row );
       if ( bin_ptr == m_bins[bank].end()) {
+
+		bool pickHighPrioReq = false;
+		if (pickHighPrioReq)
+		{
+        	dram_req_t* req = NULL;
+   		 	std::list<dram_req_t*>::reverse_iterator ptr = m_queue[req->bk].rbegin();
+		 	while (ptr != m_queue[req->bk].rend())
+		 	{
+			 	req = (*ptr);
+   			 	if (req->data->get_inst().mIsHighPrioInst())
+				 	break;
+			 	ptr++;
+		 	}
+
+		 	if (req != NULL)
+		 	{
+   				std::list<dram_req_t*>::iterator ptr = m_queue[req->bk].begin();
+				while (ptr != m_queue[req->bk].end())
+				{
+					dram_req_t* req1 = (*ptr);
+					if (req == req1)
+						break;
+					ptr++;
+				}
+
+		 		m_queue[req->bk].erase(ptr);
+   				m_queue[req->bk].push_back(req);
+		 	}
+		}
+
          dram_req_t *req = m_queue[bank].back();
          bin_ptr = m_bins[bank].find( req->row );
          assert( bin_ptr != m_bins[bank].end() ); // where did the request go???
@@ -96,6 +169,17 @@ dram_req_t *frfcfs_scheduler::schedule( unsigned bank, unsigned curr_row )
    }
    std::list<dram_req_t*>::iterator next = m_last_row[bank]->back();
    dram_req_t *req = (*next);
+
+   if (req)
+   {
+   	if (req->data->get_inst().mIsHighPrioInst())
+   		gHighPrioPendingMemReq--;
+   	else
+   		gLowPrioPendingMemReq--;
+
+   	//if (m_dram->id == 1)
+      	//printf("%llu : DRAM(%u) scheduling mem req %p to bank=%u, row=%u\n", gpu_sim_cycle, m_dram->id, req, req->bk, req->row );
+   }
 
    m_stats->concurrent_row_access[m_dram->id][bank]++;
    m_stats->row_access[m_dram->id][bank]++;

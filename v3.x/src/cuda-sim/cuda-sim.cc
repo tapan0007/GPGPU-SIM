@@ -254,6 +254,7 @@ void function_info::ptx_assemble()
       find_idominators();
       modified = connect_break_targets(); 
    } while (modified == true);
+   print_idominators();
 
    if ( g_debug_execution>=50 ) {
       print_basic_blocks();
@@ -262,7 +263,9 @@ void function_info::ptx_assemble()
    }
    if ( g_debug_execution>=2 ) {
       print_dominators();
+      print_idominators();
    }
+   findBackEdges();
    find_postdominators();
    find_ipostdominators();
    if ( g_debug_execution>=50 ) {

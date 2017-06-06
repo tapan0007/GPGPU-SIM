@@ -67,6 +67,8 @@ tag_array::~tag_array()
     delete[] m_lines;
 }
 
+#define COLD_MISS_ARRAY_SIZE (1024 * 1024)
+
 tag_array::tag_array( cache_config &config,
                       int core_id,
                       int type_id,
@@ -75,6 +77,10 @@ tag_array::tag_array( cache_config &config,
       m_lines( new_lines )
 {
     init( core_id, type_id );
+
+	coldMissArray = new unsigned int[COLD_MISS_ARRAY_SIZE];
+	for (unsigned int i = 0; i < COLD_MISS_ARRAY_SIZE; i++)
+		coldMissArray[i] = 0xFFFFFFFF;
 }
 
 void tag_array::update_cache_parameters(cache_config &config)
@@ -90,10 +96,15 @@ tag_array::tag_array( cache_config &config,
     //assert( m_config.m_write_policy == READ_ONLY ); Old assert
     m_lines = new cache_block_t[MAX_DEFAULT_CACHE_SIZE_MULTIBLIER*config.get_num_lines()];
     init( core_id, type_id );
+
+	coldMissArray = new unsigned int[COLD_MISS_ARRAY_SIZE];
+	for (unsigned int i = 0; i < COLD_MISS_ARRAY_SIZE; i++)
+		coldMissArray[i] = 0xFFFFFFFF;
 }
 
 void tag_array::init( int core_id, int type_id )
 {
+	m_cold_miss = 0;
     m_access = 0;
     m_miss = 0;
     m_pending_hit = 0;
@@ -190,6 +201,16 @@ enum cache_request_status tag_array::access( new_addr_type addr, unsigned time, 
         m_lines[idx].m_last_access_time=time; 
         break;
     case MISS:
+	{
+		unsigned int blockId = m_config.blockIdx(addr);
+		unsigned int cm = coldMissArray[blockId/32];
+		unsigned int mask = 1 << (blockId & 0x1F);
+		if (cm & mask)
+		{
+			m_cold_miss++;
+			cm = cm & (~mask);
+			coldMissArray[blockId/32] = cm;
+		}
         m_miss++;
         shader_cache_access_log(m_core_id, m_type_id, 1); // log cache misses
         if ( m_config.m_alloc_policy == ON_MISS ) {
@@ -200,6 +221,7 @@ enum cache_request_status tag_array::access( new_addr_type addr, unsigned time, 
             m_lines[idx].allocate( m_config.tag(addr), m_config.block_addr(addr), time );
         }
         break;
+	}
     case RESERVATION_FAIL:
         m_res_fail++;
         shader_cache_access_log(m_core_id, m_type_id, 1); // log cache misses
@@ -256,9 +278,9 @@ void tag_array::new_window()
 void tag_array::print( FILE *stream, unsigned &total_access, unsigned &total_misses ) const
 {
     m_config.print(stream);
-    fprintf( stream, "\t\tAccess = %d, Miss = %d (%.3g), PendingHit = %d (%.3g)\n", 
+    fprintf( stream, "\t\tAccess = %d, Miss = %d (%.3g), PendingHit = %d (%.3g), Cold Miss = %d (%.3g)\n", 
              m_access, m_miss, (float) m_miss / m_access, 
-             m_pending_hit, (float) m_pending_hit / m_access);
+             m_pending_hit, (float) m_pending_hit / m_access, m_cold_miss, (float)m_cold_miss/m_miss);
     total_misses+=m_miss;
     total_access+=m_access;
 }

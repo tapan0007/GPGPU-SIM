@@ -1,0 +1,29 @@
+addAttribute(lToken, lAttrName, NUM_OF_MEM_INSTRS_EXECUTING_ON_SM, lNumBuckets, 0, getBucketSize(40, lNumBuckets), 1);
+addAttribute(lToken, lAttrName, NUM_OF_MEM_INSTRS_EXECUTING_ON_GPU, lNumBuckets, 0, getBucketSize(600, lNumBuckets), 1);
+addAttribute(lToken, (char*)"NumOfReadyMemInstrsWithSameTBasLastMemInstr", NUM_OF_READY_MEM_INSTRS_WITH_SAME_TB_AS_LAST_MEM_INSTR, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, lAttrName, NUM_OF_READY_MEM_INSTRS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, lAttrName, NUM_OF_FUTURE_MEM_INSTRS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"NumMemReqsInSchedQ", NUM_OF_MEM_REQS_IN_SCHED_Q, lNumBuckets, 0, getBucketSize(96, lNumBuckets), 1);
+addAttribute(lToken, (char*)"NumMemQsLoaded", NUM_OF_MEM_QS_LOADED, lNumBuckets, 0, getBucketSize(6, lNumBuckets), 1);
+addAttribute(lToken, (char*)"NumOfInstrsIssuedPerL1Miss", NUM_OF_INSTR_ISSUED_PER_L1_MISS, lNumBuckets, 0, getBucketSize(100, lNumBuckets), 1);
+addAttribute(lToken, (char*)"AvgGlobalMemLatency", AVG_GL_MEM_LAT, lNumBuckets, 0, getBucketSize(800, lNumBuckets), 1);
+addAttribute(lToken, (char*)"NumOfMemPipeStalls", NUM_OF_MEM_PIPE_STALLS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"NumOfReadyMemInstrsWithSamePCasLastMemInstr", NUM_OF_READY_MEM_INSTRS_WITH_SAME_PC_AS_LAST_MEM_INSTR, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"NumOfReadyReadMemInstrs", NUM_OF_READY_READ_MEM_INSTRS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"NumOfReadyWriteMemInstrs", NUM_OF_READY_WRITE_MEM_INSTRS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"NumOfReadyGlobalMemInstrs", NUM_OF_READY_GLOBAL_MEM_INSTRS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"NumOfReadySharedMemInstrs", NUM_OF_READY_SHARED_MEM_INSTRS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"NumOfReadySharedTexConstMemInstrs", NUM_OF_READY_SHARED_TEX_CONST_MEM_INSTRS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"NumOfReadyConstantMemInstrs", NUM_OF_READY_CONSTANT_MEM_INSTRS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"NumOfReadyTextureMemInstrs", NUM_OF_READY_TEXTURE_MEM_INSTRS, lNumBuckets, 0, getBucketSize(24, lNumBuckets), 0);
+addAttribute(lToken, (char*)"L1MissPercent", L1_MISS_PERCENT, lNumBuckets, 0, getBucketSize(100, lNumBuckets), 1);
+addAttribute(lToken, (char*)"L2MissPercent", L2_MISS_PERCENT, lNumBuckets, 0, getBucketSize(100, lNumBuckets), 1);
+addAttribute(lToken, (char*)"ReadyGlobalMemInstrs", READY_GMEM_INSTRS, 2, 0, 1); //>=1
+addAttribute(lToken, (char*)"ReadyLongLatMemInstrs", READY_LMEM_INSTRS, 2, 0, 1); //>=1
+addAttribute(lToken, (char*)"ReadySharedMemInstrs", READY_SMEM_INSTRS, 2, 0, 1); //>=1
+addAttribute(lToken, (char*)"ReadyConstMemInstrs", READY_CMEM_INSTRS, 2, 0, 1); //>=1
+addAttribute(lToken, (char*)"ReadyTexMemInstrs", READY_TMEM_INSTRS, 2, 0, 1); //>=1
+addAttribute(lToken, (char*)"ReadySharedTexConstMemInstrs", READY_SHARED_TEX_CONST_MEM_INSTRS, 2, 0, 1); //>=1
+addAttribute(lToken, (char*)"ReadyGlobalConstTextureReadMemInstrs", READY_GLOBAL_CONST_TEXTURE_READ_MEM_INSTRS, 2, 0, 1); //>=1
+addAttribute(lToken, (char*)"ReadyGlobalConstTextureMemInstrs", READY_GLOBAL_CONST_TEXTURE_MEM_INSTRS, 2, 0, 1); //>=1
+addAttribute(lToken, (char*)"ReadyGlobalReadMemInstrs", READY_GLOBAL_READ_MEM_INSTRS, 2, 0, 1); //>=1

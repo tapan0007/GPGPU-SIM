@@ -98,7 +98,17 @@ dram_t::dram_t( unsigned int partition_id, const struct memory_config *config, m
       dram_util_bins[i]=0;
       dram_eff_bins[i]=0;
    }
-   last_n_cmd = last_n_activity = last_bwutil = 0;
+   //last_n_cmd = last_n_activity = last_bwutil = 0;
+   last_bwutil = 0;
+
+   last_n_cmd = 0;
+   last_n_activity = 0;
+   last_n_nop = 0;
+   last_n_act = 0;
+   last_n_pre = 0;
+   last_n_rd = 0;
+   last_n_wr = 0;
+   last_n_req = 0;
 
    n_cmd_partial = 0;
    n_activity_partial = 0;
@@ -202,6 +212,9 @@ void dram_t::scheduler_fifo()
 #define DEC2ZERO(x) x = (x)? (x-1) : 0;
 #define SWAP(a,b) a ^= b; b ^= a; a ^= b;
 
+unsigned int* gNumReqsInMemSchedArray = 0;
+extern bool gPrintDRAMInfo;
+
 void dram_t::cycle()
 {
 
@@ -241,7 +254,39 @@ void dram_t::cycle()
 		assert(0);
    }
    if ( m_config->scheduler_type == DRAM_FRFCFS ) {
+
       unsigned nreqs = m_frfcfs_scheduler->num_pending();
+
+	  	if (gNumReqsInMemSchedArray == 0)
+	  	{
+	  		gNumReqsInMemSchedArray = new unsigned int[6];
+			for (unsigned int i = 0; i < 6; i++)
+				gNumReqsInMemSchedArray[i] = 0;
+	  	}
+	  	if (nreqs != gNumReqsInMemSchedArray[id])
+	  	{
+			gNumReqsInMemSchedArray[id] = nreqs;
+	  		if (gPrintDRAMInfo)
+			{
+	  			printf("MEM_PARTITION = DRAM_%u, nreqs = %u, gpu_sim_cycle=%llu\n", id, nreqs, gpu_sim_cycle); //JAYVANT
+				bool printCsv = false;
+				for (unsigned int i = 0; i < 6; i++)
+				{
+					//if (gNumReqsInMemSchedArray[i] > 8)
+					{
+						printCsv = true;
+						break;
+					}
+				}
+				if (printCsv)
+				{
+					printf("CSV:%llu", gpu_sim_cycle);
+					for (unsigned int i = 0; i < 6; i++)
+						printf(",%u", gNumReqsInMemSchedArray[i]);
+					printf("\n");
+				}
+			}
+	  	}
       if ( nreqs > max_mrqs) {
          max_mrqs = nreqs;
       }
@@ -383,6 +428,8 @@ void dram_t::cycle()
       }
    }
    if (!issued) {
+	  //if (id == 0)
+	  	//printf("%llu: nop\n", gpu_sim_cycle);
       n_nop++;
       n_nop_partial++;
 #ifdef DRAM_VIEWCMD
@@ -431,16 +478,23 @@ class mem_fetch* dram_t::return_queue_top()
     return returnq->top();
 }
 
-void dram_t::print( FILE* simFile) const
+void dram_t::print( FILE* simFile) //const
 {
    unsigned i;
    fprintf(simFile,"DRAM[%d]: %d bks, busW=%d BL=%d CL=%d, ", 
            id, m_config->nbk, m_config->busW, m_config->BL, m_config->CL );
    fprintf(simFile,"tRRD=%d tCCD=%d, tRCD=%d tRAS=%d tRP=%d tRC=%d\n",
            m_config->tCCD, m_config->tRRD, m_config->tRCD, m_config->tRAS, m_config->tRP, m_config->tRC );
-   fprintf(simFile,"n_cmd=%d n_nop=%d n_act=%d n_pre=%d n_req=%d n_rd=%d n_write=%d bw_util=%.4g\n",
-           n_cmd, n_nop, n_act, n_pre, n_req, n_rd, n_wr,
-           (float)bwutil/n_cmd);
+   fprintf(simFile,"n_cmd=%d(%d) n_nop=%d(%d) n_act=%d(%d) n_pre=%d(%d) n_req=%d(%d) n_rd=%d(%d) n_write=%d(%d) bw_util=%.4g\n",
+           n_cmd, last_n_cmd, n_nop, last_n_nop, n_act, last_n_act, n_pre, last_n_pre, n_req, last_n_req, n_rd, last_n_rd, n_wr, 
+			last_n_wr, (float)bwutil/n_cmd);
+   last_n_cmd = n_cmd;
+   last_n_nop = n_nop;
+   last_n_act = n_act;
+   last_n_pre = n_pre;
+   last_n_rd = n_rd;
+   last_n_wr = n_wr;
+   last_n_req = n_req;
    fprintf(simFile,"n_activity=%d dram_eff=%.4g\n",
            n_activity, (float)bwutil/n_activity);
    for (i=0;i<m_config->nbk;i++) {

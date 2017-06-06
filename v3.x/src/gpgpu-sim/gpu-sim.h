@@ -373,6 +373,7 @@ public:
    unsigned finished_kernel();
    void set_kernel_done( kernel_info_t *kernel );
 
+   void getL2Stats(unsigned int& numAccesses, unsigned int& numMisses);
    void init();
    void cycle();
    bool active(); 

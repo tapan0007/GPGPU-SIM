@@ -54,6 +54,7 @@ public:
       m_n_element = 0;
       m_head = NULL;
       m_tail = NULL;
+	  m_high_prio_tail = NULL;
       for (unsigned i=0;i<m_min_len;i++) 
          push(NULL);
    }
@@ -66,6 +67,43 @@ public:
          delete m_tail;
       }
    }
+
+   	void pushHighPrio(T* data ) 
+	{
+      	assert(m_length < m_max_len);
+      	if (m_head) 
+		{
+         	if (m_tail->m_data || m_length < m_min_len) 
+			{
+				fifo_data<T>* f1 = new fifo_data<T>();
+				f1->m_data = data;
+				if (m_high_prio_tail)
+				{
+					f1->m_next = m_high_prio_tail->m_next;
+            		m_high_prio_tail->m_next = f1;
+					if (m_high_prio_tail == m_tail)
+						m_tail = f1;
+					m_high_prio_tail = f1;
+				}
+				else
+				{
+					f1->m_next = m_head;
+            		m_head = f1;
+					m_high_prio_tail = f1;
+				}
+            	m_length++;
+            	m_n_element++;
+         	}
+      	} 
+		else 
+		{
+         	m_head = m_tail = m_high_prio_tail = new fifo_data<T>();
+         	m_length++;
+         	m_n_element++;
+      		m_tail->m_next = NULL;
+      		m_tail->m_data = data;
+      	}
+	}
 
    void push(T* data ) 
    {
@@ -92,6 +130,8 @@ public:
       T* data;
       if (m_head) {
         next = m_head->m_next;
+		if (m_high_prio_tail == m_head)
+			m_high_prio_tail = NULL;
         data = m_head->m_data;
         if ( m_head == m_tail ) {
            assert( next == NULL );
@@ -187,6 +227,7 @@ private:
 
    fifo_data<T> *m_head;
    fifo_data<T> *m_tail;
+   fifo_data<T> *m_high_prio_tail;
 };
 
 #endif
